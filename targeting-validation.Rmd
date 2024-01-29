@@ -1,0 +1,122 @@
+---
+title: "Targeting Validation"
+author: "DIMA Americas"
+date: " `r format(Sys.Date(),  '%d %B %Y')`"
+always_allow_html: yes
+output: unhcrdown::pptx_slides
+---
+
+```{r setup, include=FALSE}
+#remotes::install_github('unhcr-web/unhcRstyle')
+#install.packages("remotes")
+#remotes::install_github("vidonne/unhcrthemes")
+library(tidyverse)
+library(tidymodels)
+library(readxl)
+library(unhcrthemes)
+library(unhcrdown)
+
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+knitr::opts_chunk$set(fig.width = 6, fig.height = 4, dpi = 150)
+extrafont::loadfonts(quiet=TRUE)
+
+data <- read_excel("data.xlsx")
+```
+
+# Score Distribution
+
+```{r score-dist}
+score_summary <- 
+  data |> 
+  summarize(across(c(democope, basicneeds), compose(enframe, summary))) |> 
+  pivot_longer(everything()) |> 
+  transmute(dim = name, quantile = value$name, value = as.numeric(value$value)) |> 
+  filter(quantile == "Mean")
+
+data |> 
+  pivot_longer(-assisted, names_to = "dim", values_to = "score") |> 
+  ggplot() +
+  geom_histogram(aes(score), fill = "#0072BC", color = "white", binwidth = 5, boundary = 0) +
+  geom_vline(aes(xintercept = value), data = score_summary) +
+  geom_text(aes(x = value, y = Inf, label = str_c("Mean = ", round(value, 2))), 
+            hjust = -.05, vjust = 1,
+            data = score_summary) +
+  facet_wrap(vars(dim)) +
+  labs(x = "score", y = "# of cases",
+       title = "Distribution of Scorecard Scores",
+       subtitle = "Disaggregated by scoring dimension") +
+  unhcrthemes::theme_unhcr(font_size = 11)
+ggsave("file1.jpg")
+```
+
+# Score Association
+
+```{r score-assoc}
+data |> 
+  pivot_longer(-assisted, names_to = "dim", values_to = "score") |> 
+  ggplot(aes(score, as.numeric(as.logical(assisted)), color = dim)) +
+  geom_smooth(method = "loess", se = FALSE) +
+  geom_rug(sides = "b", position = "jitter") +
+  scale_y_continuous(labels = scales::label_percent(), lim = c(0, 1)) +
+  labs(x = "score", y ="% assisted", color = NULL,
+       title = "Association between Scorecard Scores and Enumerator Decision",
+       subtitle = "Disaggregated by scoring dimension") +
+   unhcrthemes::theme_unhcr(font_size = 11) +
+  theme(legend.position = "bottom")
+ggsave("file2.jpg")
+```
+
+# Inclusion/Exclusion Error
+
+```{r score-err}
+data <- 
+  data |> 
+  mutate(amean = (democope+basicneeds)*(1/2),
+         gmean = (democope*basicneeds)^(1/2),
+         assisted = fct_rev(as_factor(assisted)))
+
+athresh <- 
+  data |> 
+  roc_curve(assisted, amean) |> 
+  arrange(desc(specificity+sensitivity)) |> 
+  pluck(".threshold", 1)
+
+gthresh <- 
+  data |> 
+  roc_curve(assisted, gmean) |> 
+  arrange(desc(specificity+sensitivity)) |> 
+  pluck(".threshold", 1)
+
+data <- 
+  data |> 
+  mutate(apred = fct_rev(as_factor(amean > athresh)),
+         gpred = fct_rev(as_factor(gmean > gthresh)))
+```
+
+
+
+```{r}
+bind_rows(apred = data |> conf_mat(assisted, apred) |> summary(),
+          gpred = data |> conf_mat(assisted, gpred) |> summary(),
+          .id = "agg") |> 
+  mutate(.estimate = if_else(.metric %in% c("sens", "spec"), 1-.estimate, .estimate)) |> 
+  filter(.metric %in% c("sens", "spec", "accuracy", "kap")) |> 
+  ggplot(aes(.metric, .estimate, group = agg)) +
+  geom_col(aes(fill = agg), color = "white", position = position_dodge()) +
+  geom_label(aes(label = scales::label_percent(.01)(.estimate)), position = position_dodge(.9)) +
+  scale_x_discrete(labels = c(sens = "exclusion\nerror", spec = "inclusion\nerror", kap = "kappa")) +
+  scale_y_continuous(labels = scales::label_percent()) +
+  scale_fill_manual(values = c(apred = "black", gpred = "#0072BC"),
+                    labels = c(apred = glue::glue("Arithmetic mean\n(thresh = {round(athresh, 2)})"), 
+                               gpred = glue::glue("Geometric mean\n(thresh = {round(gthresh, 2)})"))) +
+  coord_cartesian(clip = "off") +
+  labs(x = "error measure", y = "% of cases", fill = NULL,
+       title = "Targeting Error") +
+   unhcrthemes::theme_unhcr(font_size = 11)
+ggsave("file3.jpg")
+unhcr_save(filename = "file3_unhcr.png", bg = "white")
+```
+
+```{r}
+#rmarkdown::render("targeting-validation_GUAT1.Rmd") use it in console
+```
